@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+requests>=2.31
+
+# Optional but needed for real OCR (the server runs without them using the mock parser).
+# Install PaddlePaddle first (CPU build), then PaddleOCR:
+#   pip install paddlepaddle
+#   pip install paddleocr

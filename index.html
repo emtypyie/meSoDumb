@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visrodeck Digital Zones — Medical History Kiosk</title>
+<meta name="theme-color" content="#121110">
+<link rel="icon" type="image/svg+xml" href="https://visrodeck.emtypyie.in/assets/logo.svg">
+<style>
+  :root { --bg:#f3f6f9; --ink:#14222e; --muted:#5b6b78; --brand:#0b5c7a; --vt-dark:#121110; --line:#d5dee6; --ok:#1f8a4c; --warn:#b7791f; --bad:#b83232; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,"Segoe UI",Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  nav.navbar { background:var(--vt-dark); color:#fff; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; border-bottom:3px solid var(--brand); }
+  nav .brand { display:flex; align-items:center; gap:12px; }
+  .logo { height:40px; width:40px; object-fit:contain; display:block; }
+  .logo-fallback { display:none; height:40px; width:40px; border:1.5px solid #fff; border-radius:50%; align-items:center; justify-content:center; font-weight:700; font-size:.85rem; letter-spacing:.5px; }
+  nav .title { font-size:1.2rem; font-weight:600; }
+  footer.site { max-width:960px; margin:0 auto 28px; padding:16px; display:flex; align-items:center; gap:12px; color:var(--muted); font-size:.82rem; border-top:1px solid var(--line); }
+  footer.site .logo { height:28px; width:28px; }
+  footer.site .logo-fallback { height:28px; width:28px; font-size:.65rem; color:var(--ink); border-color:var(--ink); }
+  .badges span { font-size:.75rem; padding:3px 9px; border-radius:999px; background:rgba(255,255,255,.18); margin-left:6px; }
+  main { max-width:960px; margin:22px auto; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:18px; }
+  h2 { margin:0 0 12px; font-size:1.05rem; }
+  label { display:block; font-size:.82rem; color:var(--muted); margin:8px 0 4px; }
+  input[type=text], input[type=file] { width:100%; padding:9px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  button { background:var(--brand); color:#fff; border:0; padding:9px 16px; border-radius:6px; cursor:pointer; font-size:.9rem; margin:10px 8px 0 0; }
+  button.secondary { background:#5b6b78; }
+  button:disabled { opacity:.5; cursor:default; }
+  #preview { max-width:220px; max-height:220px; margin-top:10px; border:1px solid var(--line); border-radius:6px; display:none; }
+  #status { margin-top:10px; font-size:.88rem; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .rec { border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
+  .rec header { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .rec .tag { font-size:.7rem; background:#eaf1f6; padding:2px 8px; border-radius:999px; color:var(--muted); }
+  .rec .sub { color:var(--muted); font-size:.85rem; margin:4px 0; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th, td { border:1px solid var(--line); padding:7px 9px; text-align:left; font-size:.88rem; }
+  th { background:#eaf1f6; }
+  .toolbar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<nav class="navbar">
+  <a class="brand" href="https://visrodeck.emtypyie.in" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">
+    <img class="logo" src="assets/logo.svg" alt="Visrodeck logo"
+         onerror="logoFail(this)">
+    <span class="logo-fallback" aria-hidden="true">VT</span>
+    <div class="title">Visrodeck Digital Zones — Medical History Kiosk</div>
+  </a>
+  <div class="badges"><span id="b-server">server…</span><span id="b-ocr">OCR…</span><span id="b-llm">LLM…</span></div>
+</nav>
+
+<main>
+  <section class="card">
+    <h2>Upload prescription</h2>
+    <label for="pid">Patient ID</label>
+    <input id="pid" type="text" value="Bedu">
+    <label for="file">Prescription image</label>
+    <input id="file" type="file" accept="image/*">
+    <img id="preview" alt="Prescription preview">
+    <div><button id="upload">Scan &amp; save</button></div>
+    <div id="status"></div>
+  </section>
+
+  <section class="card">
+    <div class="toolbar">
+      <h2 style="margin:0">Medical history</h2>
+      <button id="refresh" class="secondary" style="margin:0">Refresh</button>
+      <button id="print-latest" style="margin:0">Print slip (latest)</button>
+      <button id="print-selected" style="margin:0">Print slip (selected)</button>
+    </div>
+    <div id="records" style="margin-top:14px"></div>
+  </section>
+
+  <section class="card">
+    <h2>All medicines (combined table)</h2>
+    <table>
+      <thead><tr><th>Date</th><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead>
+      <tbody id="all-meds"></tbody>
+    </table>
+  </section>
+</main>
+
+<footer class="site">
+  <img class="logo" src="assets/logo.svg" alt=""
+       onerror="logoFail(this)">
+  <span class="logo-fallback" aria-hidden="true">VT</span>
+  <span>Visrodeck Digital Zones · a <a href="https://visrodeck.emtypyie.in" target="_blank" rel="noopener" style="color:inherit">Visrodeck Technologies</a> project · Calcutta, India</span>
+</footer>
+
+<script>
+// Logo: try local assets/logo.svg first, then the live site, then the "VT" mark.
+function logoFail(img) {
+  if (!img.dataset.triedRemote) {
+    img.dataset.triedRemote = '1';
+    img.src = 'https://visrodeck.emtypyie.in/assets/logo.svg';
+  } else {
+    img.style.display = 'none';
+    img.nextElementSibling.style.display = 'flex';
+  }
+}
+const $ = id => document.getElementById(id);
+const pid = () => ($('pid').value.trim() || 'Bedu');
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text !== undefined) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+function setStatus(msg, cls) { const s = $('status'); s.textContent = msg; s.className = cls || ''; }
+
+async function loadHealth() {
+  try {
+    const h = await (await fetch('/api/health')).json();
+    $('b-server').textContent = 'server ✓';
+    $('b-ocr').textContent = h.ocr.paddleocr_installed ? 'OCR ✓' : 'OCR: mock';
+    $('b-llm').textContent = h.llm.available
+      ? (h.llm.loaded ? 'LLM ✓ ' + h.llm.model : 'LLM ready: ' + h.llm.model)
+      : 'LLM: install llama.cpp';
+  } catch { $('b-server').textContent = 'server ✗'; }
+}
+
+async function loadRecords() {
+  const data = await (await fetch(`/api/patient/${encodeURIComponent(pid())}/records`)).json();
+  const box = $('records'); box.innerHTML = '';
+  const tbody = $('all-meds'); tbody.innerHTML = '';
+  if (!data.records.length) box.appendChild(el('div', 'No records for this patient yet.', 'sub'));
+  for (const r of data.records) {
+    const card = el('div', undefined, 'rec');
+    const head = document.createElement('header');
+    const left = document.createElement('label');
+    left.style.cssText = 'display:flex;gap:8px;align-items:center;margin:0;color:inherit;font-size:1rem;font-weight:600';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = r.id; cb.className = 'sel';
+    left.append(cb, document.createTextNode((r.date || 'Undated') + ' — ' + (r.diagnosis || 'No diagnosis')));
+    head.append(left, el('span', r.source, 'tag'));
+    card.appendChild(head);
+    card.appendChild(el('div', 'Doctor: ' + (r.doctor || '—') + '  ·  Record #' + r.id, 'sub'));
+    const t = document.createElement('table');
+    t.innerHTML = '<thead><tr><th>Medicine</th><th>Dosage</th><th>Frequency</th><th>Duration</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    for (const m of r.medicines) {
+      const tr = document.createElement('tr');
+      [m.name, m.dosage, m.frequency, m.duration].forEach(v => tr.appendChild(el('td', v)));
+      tb.appendChild(tr);
+      const tr2 = document.createElement('tr');
+      [r.date, m.name, m.dosage, m.frequency, m.duration].forEach(v => tr2.appendChild(el('td', v)));
+      tbody.appendChild(tr2);
+    }
+    t.appendChild(tb); card.appendChild(t);
+    if (r.notes) card.appendChild(el('div', 'Notes: ' + r.notes, 'sub'));
+    box.appendChild(card);
+  }
+}
+
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0], p = $('preview');
+  if (!f) { p.style.display = 'none'; return; }
+  p.src = URL.createObjectURL(f); p.style.display = 'block';
+});
+
+$('upload').addEventListener('click', async () => {
+  const f = $('file').files[0];
+  if (!f) return setStatus('Choose an image first.', 'warn');
+  const fd = new FormData(); fd.append('file', f); fd.append('patient_id', pid());
+  $('upload').disabled = true; setStatus('Scanning… (OCR + LLM can take a little while)');
+  try {
+    const res = await fetch('/api/upload-prescription', { method: 'POST', body: fd });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.detail || 'Upload failed');
+    const w = out.pipeline.warnings.length ? ' — ' + out.pipeline.warnings.join('; ') : '';
+    setStatus(`Saved record #${out.record.id} (ocr: ${out.pipeline.ocr}, parser: ${out.pipeline.parser})${w}`,
+              out.pipeline.parser === 'mock' ? 'warn' : 'ok');
+    await loadRecords();
+  } catch (e) { setStatus(e.message, 'bad'); }
+  $('upload').disabled = false;
+});
+
+async function printSlip(ids) {
+  try {
+    const res = await fetch('/api/print-slip', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_id: pid(), record_ids: ids })
+    });
+    const slip = await res.json();
+    if (!res.ok) throw new Error(slip.detail || 'Could not build slip');
+    window.open(slip.view_url + '&print=1', '_blank');
+  } catch (e) { setStatus(e.message, 'bad'); }
+}
+$('print-latest').addEventListener('click', () => printSlip(null));
+$('print-selected').addEventListener('click', () => {
+  const ids = [...document.querySelectorAll('.sel:checked')].map(c => +c.value);
+  if (!ids.length) return setStatus('Tick at least one record first.', 'warn');
+  printSlip(ids);
+});
+$('refresh').addEventListener('click', loadRecords);
+$('pid').addEventListener('change', loadRecords);
+
+loadHealth(); loadRecords();
+</script>
+</body>
+</html>
