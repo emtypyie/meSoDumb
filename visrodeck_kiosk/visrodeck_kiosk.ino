@@ -3,13 +3,10 @@
 #include <Wire.h>
 #include <U8g2lib.h> // Generic display library; this constructor targets SSD1306 128x64 I2C.
 #include <ArduinoJson.h> // ArduinoJson 6 or 7
-#include "wifi_secrets.h" // Generated from the local .env; keep credentials out of this sketch.
-
-
-// --------------------------- Demo configuration ---------------------------
-const char *WIFI_SSID = VISRODECK_WIFI_SSID;
-const char *WIFI_PASSWORD = VISRODECK_WIFI_PASSWORD;
-const char *SERVER_BASE_URL = "http://192.168.29.116:8000"; // Current backend LAN address; update if DHCP changes it.
+// --------------------------- Kiosk configuration --------------------------
+const char *WIFI_SSID = "AICTechno@Guest";
+const char *WIFI_PASSWORD = "Guest@aic#1126";
+const char *SERVER_BASE_URL = "http://10.10.131.182:8000"; // Laptop's current Wi-Fi IP and server port.
 // The included laptop server uses the case-sensitive ID "Bedu".
 const char *PATIENT_ID = "Bedu";
 const int APPROACH_DISTANCE_CM = 60;
@@ -17,12 +14,13 @@ const int APPROACH_DISTANCE_CM = 60;
 // ------------------------------- Pinout -----------------------------------
 constexpr uint8_t OLED_SDA = 21, OLED_SCL = 22;
 constexpr uint8_t TRIG_PIN = 5, ECHO_PIN = 18, TOUCH_PIN = 4;
+constexpr bool TOUCH_ACTIVE_HIGH = true; // TTP223 default; set false if its AHLB pad selects active-low.
+constexpr bool TOUCH_LOGIN_ENABLED = false; // Demo login uses the existing YES button instead.
 constexpr uint8_t ENC_CLK = 25, ENC_DT = 26, ENC_SW = 27;
 constexpr uint8_t YES_PIN = 32, NO_PIN = 33;
 constexpr uint8_t LED_RED = 14, LED_GREEN = 13, LED_BLUE = 19;
 constexpr uint8_t OLED_ADDR = 0x3C;
 constexpr uint32_t AWAY_APPROACH_MS = 5000;
-constexpr uint32_t AWAY_LOGOUT_MS = 10000;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 35;
 constexpr size_t MAX_RECORDS = 20;
 
@@ -31,17 +29,20 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R2, U8X8_PIN_NONE); // Rotate t
 struct Record {
   String date, doctor, diagnosis, notes, medicineName, dosage, frequency, duration;
   int id = -1;
+  bool isDemo = false;
 };
 Record records[MAX_RECORDS];
 size_t recordCount = 0;
-bool usingFallback = false;
+bool serverUnavailable = false;
 
 enum KioskState { STATE_IDLE, STATE_APPROACH, STATE_AUTHENTICATING, STATE_BROWSE };
 KioskState state = STATE_IDLE;
 bool confirmView = false;
-size_t selectedItem = 0; // records, followed by the print-history item
+size_t selectedItem = 0; // reports, followed by print-history and refresh items
 uint32_t farSince = 0;
 bool touchWasHigh = false;
+bool touchRawInitialized = false;
+bool touchLastRawHigh = false;
 uint32_t lastDistanceRead = 0;
 int filteredDistance = -1;
 int lastPingCm[3] = {-1, -1, -1};
@@ -103,17 +104,22 @@ void showBranding() {
   display.drawStr(0, 19, "VISRODECK");
   display.setFont(u8g2_font_6x10_tf);
   display.drawStr(0, 32, "Digital Zones");
-  display.drawStr(0, 48, "Place finger on");
-  display.drawStr(0, 60, "touch sensor...");
+  display.drawStr(0, 48, "Press YES to login");
+  display.drawStr(0, 60, "Bedu demo account");
   display.sendBuffer();
+}
+
+void showIdleScreen() {
+  showLines("VISRODECK READY", "Press YES to login", "Bedu demo account");
 }
 
 void setState(KioskState next) {
   state = next;
   if (next == STATE_IDLE) {
     setLeds(false, false, false);
-    // Keep the panel awake until the sonar has returned at least one valid range.
-    display.setPowerSave(sensorHasValidReading ? 1 : 0);
+    display.setPowerSave(0);
+    sensorWarningVisible = false;
+    showIdleScreen();
     confirmView = false; selectedItem = 0; farSince = 0;
   } else {
     display.setPowerSave(0);
@@ -155,18 +161,6 @@ int readFilteredDistance() {
   return filteredDistance;
 }
 
-void addFallbackRecords() {
-  recordCount = 2; usingFallback = true;
-  records[0].date = "2026-11-20"; records[0].doctor = "Dr. Sharma";
-  records[0].diagnosis = "Viral Fever"; records[0].notes = "Rest and fluids";
-  records[0].medicineName = "Paracetamol"; records[0].dosage = "500mg";
-  records[0].frequency = "BD"; records[0].duration = "5d"; records[0].id = -1;
-  records[1].date = "2026-10-12"; records[1].doctor = "Dr. Mehta";
-  records[1].diagnosis = "Seasonal Allergy"; records[1].notes = "Avoid dust";
-  records[1].medicineName = "Cetirizine"; records[1].dosage = "10mg";
-  records[1].frequency = "OD"; records[1].duration = "3d"; records[1].id = -1;
-}
-
 bool connectWiFi(uint32_t timeoutMs = 9000) {
   if (WiFi.status() == WL_CONNECTED) return true;
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -182,18 +176,19 @@ bool connectWiFi(uint32_t timeoutMs = 9000) {
 }
 
 bool fetchRecords() {
-  if (!connectWiFi()) { addFallbackRecords(); return false; }
+  recordCount = 0;
+  if (!connectWiFi()) { serverUnavailable = true; return false; }
   HTTPClient http;
   String url = String(SERVER_BASE_URL) + "/api/patient/" + PATIENT_ID + "/records";
   http.setTimeout(5000);
-  if (!http.begin(url)) { addFallbackRecords(); return false; }
+  if (!http.begin(url)) { serverUnavailable = true; return false; }
   int code = http.GET();
   Serial.printf("[API] GET records -> HTTP %d\n", code);
-  if (code != HTTP_CODE_OK) { http.end(); addFallbackRecords(); return false; }
+  if (code != HTTP_CODE_OK) { http.end(); serverUnavailable = true; return false; }
   DynamicJsonDocument doc(16384);
   DeserializationError err = deserializeJson(doc, http.getString());
   http.end();
-  if (err || !doc["records"].is<JsonArray>()) { addFallbackRecords(); return false; }
+  if (err || !doc["records"].is<JsonArray>()) { serverUnavailable = true; return false; }
   JsonArray arr = doc["records"].as<JsonArray>();
   recordCount = 0;
   for (JsonObject item : arr) {
@@ -202,6 +197,8 @@ bool fetchRecords() {
     r.date = item["date"] | ""; r.doctor = item["doctor"] | "";
     r.diagnosis = item["diagnosis"] | ""; r.notes = item["notes"] | "";
     r.id = item["id"] | -1;
+    String source = item["source"] | "";
+    r.isDemo = source == "demo";
     r.medicineName = "No medicine listed"; r.dosage = ""; r.frequency = ""; r.duration = "";
     JsonArray meds = item["medicines"].as<JsonArray>();
     if (!meds.isNull() && meds.size()) {
@@ -210,8 +207,7 @@ bool fetchRecords() {
       r.frequency = med["frequency"] | ""; r.duration = med["duration"] | "";
     }
   }
-  if (!recordCount) { addFallbackRecords(); return false; }
-  usingFallback = false;
+  serverUnavailable = false;
   return true;
 }
 
@@ -225,18 +221,24 @@ void drawBrowse() {
   if (confirmView) {
     showLines("Print this slip?", "YES: print", "NO: go back"); return;
   }
-  if (selectedItem >= recordCount) {
-    showLines("MENU", "[PRINT HISTORY]", "YES: print all", "NO: log out"); return;
+  if (!recordCount) {
+    showLines("NO SAVED REPORTS", serverUnavailable ? "Server unavailable" : "History is empty", "YES: retry sync", "NO: log out"); return;
+  }
+  if (selectedItem == recordCount) {
+    showLines("MENU", "[PRINT HISTORY]", "YES: print all", "NEXT: refresh"); return;
+  }
+  if (selectedItem == recordCount + 1) {
+    showLines("MENU", "[REFRESH RECORDS]", "YES: sync latest", "NO: log out"); return;
   }
   Record &r = records[selectedItem];
-  showLines(String(selectedItem + 1) + "/" + String(recordCount) + (usingFallback ? "  DEMO" : ""),
+  showLines(String(selectedItem + 1) + "/" + String(recordCount) + (r.isDemo ? " DEMO" : ""),
     shortText(r.date + " " + r.diagnosis, 21),
     shortText(r.medicineName + " " + r.dosage, 21),
     shortText(r.frequency + " " + r.duration, 21));
 }
 
 bool postSlip(bool allHistory, size_t index) {
-  if (usingFallback || !connectWiFi()) return false;
+  if (serverUnavailable || !connectWiFi()) return false;
   HTTPClient http;
   http.setTimeout(7000);
   if (!http.begin(String(SERVER_BASE_URL) + "/api/print-slip")) return false;
@@ -261,7 +263,7 @@ bool postSlip(bool allHistory, size_t index) {
 void showPrintResult(bool success) {
   if (success) {
     setLeds(false, true, false); showLines("Slip sent to", "desk printer!");
-  } else showLines("Print unavailable", usingFallback ? "Offline demo data" : "Check Wi-Fi/server");
+  } else showLines("Print unavailable", "Check Wi-Fi/server");
   delay(2000);
   setLeds(false, true, false);
 }
@@ -280,7 +282,8 @@ void beginAuthentication() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT); pinMode(TOUCH_PIN, INPUT);
+  pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT);
+  pinMode(TOUCH_PIN, TOUCH_ACTIVE_HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
   digitalWrite(TRIG_PIN, LOW);
   pinMode(LED_RED, OUTPUT); pinMode(LED_GREEN, OUTPUT); pinMode(LED_BLUE, OUTPUT);
   pinMode(ENC_CLK, INPUT_PULLUP); pinMode(ENC_DT, INPUT_PULLUP); pinMode(ENC_SW, INPUT_PULLUP);
@@ -329,18 +332,31 @@ void loop() {
     } else if (state == STATE_IDLE && distance >= 0 && distance <= APPROACH_DISTANCE_CM) {
       setState(STATE_APPROACH);
     } else if (state == STATE_IDLE && distance > APPROACH_DISTANCE_CM && distance < 400) {
+      if (sensorWarningVisible) showIdleScreen();
       sensorWarningVisible = false;
-      display.setPowerSave(1);
     }
     if (state == STATE_APPROACH && farSince && now - farSince >= AWAY_APPROACH_MS) setState(STATE_IDLE);
-    if (state == STATE_BROWSE && farSince && now - farSince >= AWAY_LOGOUT_MS) setState(STATE_IDLE);
   }
 
-  if (state == STATE_APPROACH) {
-    bool touchHigh = digitalRead(TOUCH_PIN) == HIGH;
-    if (touchHigh && !touchWasHigh) beginAuthentication();
-    touchWasHigh = touchHigh;
+  // Let a touch signal start demo login even if the ultrasonic sensor has no echo.
+  // INPUT_PULLDOWN keeps an unconnected GPIO4 from floating HIGH.
+  bool touchLevelHigh = digitalRead(TOUCH_PIN) == HIGH;
+  if (!touchRawInitialized || touchLevelHigh != touchLastRawHigh) {
+    Serial.printf("[TOUCH] GPIO4 raw=%s\n", touchLevelHigh ? "HIGH" : "LOW");
+    touchLastRawHigh = touchLevelHigh;
+    touchRawInitialized = true;
   }
+  bool touchActive = TOUCH_ACTIVE_HIGH ? touchLevelHigh : !touchLevelHigh;
+  if (state == STATE_IDLE || state == STATE_APPROACH) {
+    bool buttonLogin = yesButton.pressed();
+    bool touchLogin = TOUCH_LOGIN_ENABLED && touchActive && !touchWasHigh;
+    if (buttonLogin || touchLogin) {
+      if (state == STATE_IDLE) setState(STATE_APPROACH);
+      Serial.printf("[LOGIN] start via %s\n", buttonLogin ? "YES button" : "touch sensor");
+      beginAuthentication();
+    }
+  }
+  touchWasHigh = touchActive;
 
   if (state == STATE_BROWSE) {
     int32_t steps;
@@ -348,10 +364,16 @@ void loop() {
     if (steps) {
       int direction = (steps > 0) ? 1 : -1;
       int32_t count = abs(steps);
+      size_t itemCount = recordCount ? recordCount + 2 : 1;
       while (count--) {
-        if (direction > 0) selectedItem = (selectedItem + 1) % (recordCount + 1);
-        else selectedItem = (selectedItem == 0) ? recordCount : selectedItem - 1;
+        if (direction > 0) {
+          if (selectedItem + 1 < itemCount) ++selectedItem;
+        } else if (selectedItem > 0) {
+          --selectedItem;
+        }
       }
+      Serial.printf("[ENCODER] steps=%ld selection=%u/%u\n",
+        (long)steps, (unsigned)(selectedItem + 1), (unsigned)itemCount);
       drawBrowse();
     }
     bool yes = yesButton.pressed(), no = noButton.pressed();
@@ -361,8 +383,18 @@ void loop() {
     } else if (yes) {
       if (confirmView) {
         bool ok = postSlip(false, selectedItem); confirmView = false; showPrintResult(ok); drawBrowse();
+      } else if (!recordCount) {
+        bool ok = fetchRecords(); selectedItem = 0;
+        showLines(ok && recordCount ? "REPORTS SYNCED" : "NO SAVED REPORTS",
+          serverUnavailable ? "Check Wi-Fi/server" : "History is empty");
+        delay(1100); drawBrowse();
       } else if (selectedItem == recordCount) {
         bool ok = postSlip(true, 0); showPrintResult(ok); drawBrowse();
+      } else if (selectedItem == recordCount + 1) {
+        bool ok = fetchRecords(); selectedItem = 0;
+        showLines(ok ? "REPORTS SYNCED" : "SYNC FAILED",
+          serverUnavailable ? "Check Wi-Fi/server" : "Newest report loaded");
+        delay(1100); drawBrowse();
       } else { confirmView = true; drawBrowse(); }
     }
   }

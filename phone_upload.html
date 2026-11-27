@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#142d35">
+  <title>Scan prescription · Visrodeck</title>
+  <style>
+    :root { color-scheme: light; --ink:#142d35; --muted:#60737a; --line:#dbe4e5; --teal:#087e83; --bg:#f2f6f5; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    header { background:var(--ink); color:white; padding:22px 20px 20px; }
+    header small { color:#b7d0d1; letter-spacing:.12em; font-size:.7rem; font-weight:700; }
+    header h1 { margin:6px 0 0; font-size:1.35rem; }
+    main { width:min(100% - 28px, 520px); margin:22px auto; }
+    .step { color:var(--teal); font-size:.76rem; text-transform:uppercase; letter-spacing:.09em; font-weight:750; }
+    h2 { margin:5px 0 4px; font-size:1.15rem; }
+    p { margin:5px 0 14px; color:var(--muted); }
+    .patient { display:inline-flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid var(--line); border-radius:999px; background:white; font-size:.86rem; font-weight:650; }
+    .surface { margin-top:18px; padding:18px; background:white; border:1px solid var(--line); border-radius:14px; }
+    label { display:block; margin-bottom:8px; font-weight:650; }
+    input[type=file] { width:100%; min-height:48px; padding:10px; border:1px solid var(--line); border-radius:9px; background:#fbfdfc; }
+    #preview { display:none; max-width:100%; max-height:55vh; margin-top:14px; border-radius:9px; object-fit:contain; background:#e8eeee; }
+    button { width:100%; min-height:50px; margin-top:16px; border:0; border-radius:9px; background:var(--teal); color:white; font:700 1rem system-ui,sans-serif; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:wait; }
+    #status { display:none; margin-top:16px; padding:12px 13px; border-radius:9px; background:#eaf5f2; color:#165849; overflow-wrap:anywhere; }
+    #status.error { background:#fff0ef; color:#912f29; }
+    footer { margin:20px 4px; color:var(--muted); font-size:.78rem; }
+  </style>
+</head>
+<body>
+  <header><small>VISRODECK · DIGITAL ZONES</small><h1>Prescription capture</h1></header>
+  <main>
+    <div class="step">Phone upload</div>
+    <h2>Photograph the prescription</h2>
+    <p>Keep the whole page in frame, hold steady, then lock in the photo to add it to the kiosk history.</p>
+    <div class="patient">Patient <span id="patient">Bedu</span></div>
+    <form id="upload-form" class="surface">
+      <label for="photo">Take or choose a clear photo</label>
+      <input id="photo" name="file" type="file" accept="image/*" capture="environment" required>
+      <img id="preview" alt="Prescription photo preview">
+      <button id="lock-in" type="submit">Lock In &amp; Upload</button>
+      <div id="status" role="status" aria-live="polite"></div>
+    </form>
+    <footer>The photo is sent to the laptop running this kiosk. If the scan cannot read text, retake it with brighter light and less glare.</footer>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const patientId = params.get('patient_id') || 'Bedu';
+    const photo = document.getElementById('photo');
+    const preview = document.getElementById('preview');
+    const statusBox = document.getElementById('status');
+    const submitButton = document.getElementById('lock-in');
+    document.getElementById('patient').textContent = patientId;
+
+    photo.addEventListener('change', () => {
+      const file = photo.files[0];
+      if (!file) { preview.style.display = 'none'; return; }
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = 'block';
+      statusBox.style.display = 'none';
+    });
+
+    document.getElementById('upload-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const file = photo.files[0];
+      if (!file) return;
+      const data = new FormData();
+      data.append('file', file, file.name);
+      data.append('patient_id', patientId);
+      submitButton.disabled = true;
+      submitButton.textContent = 'Uploading and scanning…';
+      statusBox.className = '';
+      statusBox.style.display = 'block';
+      statusBox.textContent = 'Sending the photo to the laptop and reading the prescription.';
+      try {
+        const response = await fetch('/api/upload-prescription', { method:'POST', body:data });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Upload failed. Try again.');
+        statusBox.textContent = `Locked in. Prescription saved as report #${result.record.id}. You can return to the laptop and generate the summary.`;
+        submitButton.textContent = 'Take another photo';
+        submitButton.disabled = false;
+        submitButton.type = 'button';
+        submitButton.onclick = () => location.reload();
+      } catch (error) {
+        statusBox.className = 'error';
+        statusBox.textContent = error.message;
+        submitButton.disabled = false;
+        submitButton.textContent = 'Try upload again';
+      }
+    });
+  </script>
+</body>
+</html>
