@@ -1,4 +1,4 @@
-# Visrodeck Digital Zones — Medical History Kiosk (local backend)
+# Medikiosk (by Visrodeck)
 
 FastAPI server + web dashboard + printable 80 mm slip. Runs entirely on your laptop.
 
